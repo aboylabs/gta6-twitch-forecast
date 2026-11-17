@@ -17,7 +17,7 @@ input directory, calls the model in `src/model.py`, and writes one
 network, no randomness, no clock — two runs over the same input are
 byte-identical.
 
-The model ("Blend2") conditions the whole forecast on the case's known
+The model ("Blend3") conditions the whole forecast on the case's known
 hour-1 print `v1` and on the launch profiles in that case's
 `comparables`. For each hour `h = 2..24` it works in log-ratios
 `r_h = ln(viewers_h / viewers_1)` and combines two median estimates:
@@ -28,18 +28,25 @@ hour-1 print `v1` and on the launch profiles in that case's
    hour-1 scale (correlation about −0.94 by hour 24), so a pooled
    median would overstate the rise for a launch as big as GTA VI.
    Spread comes from the residual standard deviation (floored at 0.25).
+   The regression is never evaluated beyond the largest training
+   launch: its target is clamped to the largest log hour-1 in the
+   training set, so the fitted line saturates at the edge of its
+   support instead of extrapolating a decline beyond the biggest
+   launch observed.
 2. **Rolling-big empirical median (RB).** The median log-ratio of the
    rolling-midnight, big launches — tier "comparable", midnight-local
    unlock, hour-1 viewers above 50,000 — the closest analogues to GTA
    VI's own unlock. Spread comes from the inter-quartile range
    (divided by 1.349; a fixed 0.5 when fewer than four values).
 
-The reported median is the average of the two medians. The reported
-spread is the larger of the two spreads (floored at 0.30), widened in
-quadrature by half the absolute disagreement between the two medians,
-so the band grows exactly where the two views diverge — most of all
-for hour-1 prints far outside the training range. Quantiles are
-`v1 * exp(median + z_tau * sigma)`.
+The reported median weights the regression leg at two thirds and the
+rolling-big median at one third: leave-one-out backtesting showed the
+regression leg is the more informative of the two. The reported
+spread is the root-mean-square of the two spreads (floored at 0.30),
+widened in quadrature by half the absolute disagreement between the
+two medians, so the band grows exactly where the two views diverge —
+most of all for hour-1 prints far outside the training range.
+Quantiles are `v1 * exp(median + z_tau * sigma)`.
 
 Early-access-contaminated and weak / free-to-play launches are excluded
 from all training sets, and the raw pooled median profile is never used
@@ -67,7 +74,13 @@ contest's pinball loss on the log scale):
 | model | loss, rolling-big (n=6) | loss, v1 > 50k (n=20) |
 |---|---|---|
 | house baseline | 0.250 | 0.251 |
-| Blend2 (this entry) | 0.188 | 0.236 |
+| Blend2 (previous entry) | 0.188 | 0.236 |
+| Blend3 (this entry) | 0.181 | 0.230 |
+
+Blend3 also improves the other slices (all-37: 0.597 vs 0.632; clean-26:
+0.666 vs 0.710) and wins in every leave-one-target-out of the six
+rolling-big launches; the gain holds across the whole 0.60–0.75 blend
+weight neighbourhood, so it is a plateau, not a tuned spike.
 
 See `../analysis/` (outside this repository) for the validation
 scripts and the full analysis.
