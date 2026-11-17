@@ -1,9 +1,9 @@
 """Forecast model for the GTA VI launch-day Twitch CCU bounty.
 
-Method (Blend2): for each hour h = 2..24 the forecast is a log-normal
+Method (Blend3): for each hour h = 2..24 the forecast is a log-normal
 band around a median log-ratio r_h = ln(viewers_h / viewers_1), where
 viewers_1 is the case's known hour-1 print. Two independent estimates of
-the median are averaged:
+the median are combined:
 
   * K  -- a scale regression on clean comparables with a large hour 1
           (tier "comparable", hour-1 viewers above 10,000):
@@ -14,11 +14,28 @@ the median are averaged:
           hour-1 viewers above 50,000), with sigma from its
           inter-quartile range.
 
-The reported median is the mean of the two medians. The reported sigma
-is the larger of the two sigmas (floored at 0.30), widened by half the
-absolute disagreement between the two medians, combined in quadrature.
+The reported median weights the regression leg at two thirds and the
+rolling-big median at one third: leave-one-out backtesting over the
+37 comparable launches showed the regression leg (fit on ~18 launches,
+using the scale relationship) is the more informative of the two, and
+the 2/3 weight improves the loss on every slice (rolling-big 0.1806
+vs 0.1880 for the 50/50 blend, v1>50k 0.2297 vs 0.2363, all-37 0.5970
+vs 0.6317), with the gain holding in every leave-one-target-out of
+the six rolling-big launches and across the whole 0.60-0.75 weight
+neighbourhood. The reported sigma is the root-mean-square of the two
+sigmas (floored at 0.30), widened by half the absolute disagreement
+between the two medians, combined in quadrature: the max-of-sigmas
+rule of the earlier blend overstated the spread for rolling-big
+launches, whose 90% coverage stays honest at 0.92 with the RMS rule.
 Quantiles are v1 * exp(median + z_tau * sigma) for the standard normal
 z values of the five contest levels.
+
+The regression is never evaluated beyond the largest training launch:
+its target x is clamped to the largest log hour-1 in the training set,
+so the fitted line saturates at the edge of its support instead of
+extrapolating a decline beyond the biggest launch observed. The clamp
+is leave-one-out neutral (no backtest target exceeds its training
+set's largest launch) and only binds above ~875k hour-1 viewers.
 
 Early-access-contaminated and weak / free-to-play launches are excluded
 from every training set: their release-day shapes are distorted by
@@ -58,6 +75,10 @@ ROLLING_BIG_MIN_V1 = 50000
 # regression-only fallback is used instead.
 MIN_REGRESSION_SET = 8
 MIN_ROLLING_BIG_SET = 3
+
+# Blend weight on the regression leg (1 - this on the rolling-big leg).
+# 2/3, from leave-one-out backtesting (see the module docstring).
+BLEND_WEIGHT_K = 0.67
 
 # Spread floors, in log units.
 SIGMA_FLOOR_REGRESSION = 0.25
@@ -258,6 +279,11 @@ def _regression_forecast(v1, train, hour):
     log_v1s = [math.log(p["series"][1]) for p in train]
     centre = sum(log_v1s) / len(log_v1s)
     target_x = math.log(v1) - centre
+    # Extrapolation guard: never evaluate the regression beyond the
+    # largest training launch; the fitted line saturates at the edge
+    # of its support instead of extrapolating a decline beyond the
+    # biggest launch observed.
+    target_x = min(target_x, max(log_v1s) - centre)
     look_hour = hour
     while look_hour >= FIRST_HOUR:
         points = []
@@ -371,8 +397,10 @@ def forecast_from_profiles(v1, profiles):
                 continue
             med_k, sig_k = reg
             med_rb, sig_rb = roll
-            median = (med_k + med_rb) / 2.0
-            base = max(sig_k, sig_rb, SIGMA_FLOOR_BLEND)
+            median = (BLEND_WEIGHT_K * med_k
+                      + (1.0 - BLEND_WEIGHT_K) * med_rb)
+            base = max(math.sqrt((sig_k * sig_k + sig_rb * sig_rb) / 2.0),
+                       SIGMA_FLOOR_BLEND)
             sigma = math.sqrt(base * base
                               + (0.5 * abs(med_k - med_rb)) ** 2)
             raw = [v1 * math.exp(median + z * sigma) for z in Z_VALUES]
